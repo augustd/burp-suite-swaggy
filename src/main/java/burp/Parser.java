@@ -2,11 +2,14 @@ package burp;
 
 import com.codemagi.burp.Utils;
 import com.codemagi.burp.parser.HttpRequest;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.swagger.models.HttpMethod;
 import io.swagger.models.Model;
 import io.swagger.models.Operation;
 import io.swagger.models.Path;
 import io.swagger.models.Swagger;
+import io.swagger.models.apideclaration.ApiDeclaration;
 import io.swagger.models.parameters.AbstractSerializableParameter;
 import io.swagger.models.parameters.BodyParameter;
 import io.swagger.models.parameters.Parameter;
@@ -16,6 +19,12 @@ import io.swagger.util.Json;
 import io.swagger.models.properties.ArrayProperty;
 import io.swagger.models.properties.Property;
 import io.swagger.models.properties.RefProperty;
+import io.swagger.models.resourcelisting.ResourceListing;
+import io.swagger.parser.SwaggerCompatConverter;
+import io.swagger.parser.util.SwaggerDeserializationResult;
+import io.swagger.report.MessageBuilder;
+import io.swagger.transform.migrate.ApiDeclarationMigrator;
+import io.swagger.transform.migrate.ResourceListingMigrator;
 
 import javax.swing.*;
 import java.net.URL;
@@ -58,9 +67,6 @@ public class Parser {
 			return -1;
 		}
 
-		IResponseInfo responseInfo = helpers.analyzeResponse(response);
-		callbacks.printOutput("got response");
-
 		IRequestInfo requestInfo = helpers.analyzeRequest(requestResponse);
 		headers = requestInfo.getHeaders();
 		callbacks.printOutput("got headers");
@@ -72,7 +78,31 @@ public class Parser {
 		callbacks.printOutput("domain: " + requestName);
 
 		try {
-			swagger = new SwaggerParser().parse(new String(Utils.getResponseBody(response, helpers)));
+			String responseBody = new String(Utils.getResponseBody(response, helpers));
+			callbacks.printOutput("RESPONSE BODY ----- \n" + responseBody);
+			SwaggerParser sp = new SwaggerParser();
+			callbacks.printOutput("sp: " + sp);
+			
+			SwaggerDeserializationResult sdr = sp.readWithInfo(responseBody);
+			callbacks.printOutput("sdr: " + sdr);
+			callbacks.printOutput("sdr: " + sdr.getMessages());
+			
+			swagger = sp.parse(responseBody);
+			callbacks.printOutput("swagger: " + swagger);
+			
+			if (swagger == null) {
+				//maybe its an older version of the swagger spec...
+				MessageBuilder messages = new MessageBuilder();
+
+				ResourceListing resourceListing = readResourceListing(responseBody, messages);
+
+				ApiDeclaration apiDeclaration = readDeclaration(responseBody, messages);
+				List<ApiDeclaration> apis = new ArrayList<>();
+				apis.add(apiDeclaration);
+								
+				swagger = new SwaggerCompatConverter().convert(resourceListing, apis);
+			}
+			
 			callbacks.printOutput("swagger: " + swagger.getHost() + swagger.getBasePath());
 
 			//generate the models (JSON request body)
@@ -143,6 +173,47 @@ public class Parser {
 		}
 		return 0;
 	}
+	
+    public ResourceListing readResourceListing(String input, MessageBuilder messages) {
+        ResourceListing output = null;
+        JsonNode jsonNode;
+        try {
+			jsonNode = Json.mapper().readTree(input);
+
+			if (jsonNode.get("swaggerVersion") == null) {
+                return null;
+            }
+            ResourceListingMigrator migrator = new ResourceListingMigrator();
+            JsonNode transformed = migrator.migrate(messages, jsonNode);
+            output = Json.mapper().convertValue(transformed, ResourceListing.class);
+        } catch (java.lang.IllegalArgumentException e) {
+            return null;
+        } catch (Exception e) {
+            BurpExtender.getInstance().printStackTrace(e);
+        }
+        return output;
+    }
+
+	public ApiDeclaration readDeclaration(String input, MessageBuilder messages) {
+        ApiDeclaration output = null;
+        try {
+            JsonNode jsonNode = Json.mapper().readTree(input);
+
+            // this should be moved to a json patch
+            if (jsonNode.isObject()) {
+                ((ObjectNode) jsonNode).remove("authorizations");
+            }
+
+            ApiDeclarationMigrator migrator = new ApiDeclarationMigrator();
+            JsonNode transformed = migrator.migrate(messages, jsonNode);
+            output = Json.mapper().convertValue(transformed, ApiDeclaration.class);
+        } catch (java.lang.IllegalArgumentException e) {
+            return null;
+        } catch (Exception e) {
+            BurpExtender.getInstance().printStackTrace(e);
+        }
+        return output;
+    }
 
 	private String getDefaultValue(Parameter p) {
 		callbacks.printOutput("***** getDefaultValue ***** Parameter " + p);
@@ -185,10 +256,13 @@ public class Parser {
 	}
 
 	private Map<String, Object> createModelHash(String modelName, Model model) {
-		callbacks.printOutput("***** createModelHash ***** Model " + modelName);
+		callbacks.printOutput("***** createModelHash ***** modelName " + modelName + " Model: " + model);
 
 		Map<String, Object> output = new HashMap<>();
 
+		//if we don't have a valid model, just return an empty output
+		if (model == null) return output;
+		
 		//if we already have this model cached, return it
 		callbacks.printOutput("hashModels: " + hashModels);
 		if (hashModels.containsKey(modelName)) {
