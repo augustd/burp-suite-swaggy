@@ -91,12 +91,16 @@ public class Parser {
 			callbacks.printOutput("swagger: " + swagger);
 			
 			if (swagger == null) {
+                callbacks.printOutput("Not Swagger 2.0. Trying older version");
 				//maybe its an older version of the swagger spec...
 				MessageBuilder messages = new MessageBuilder();
 
 				ResourceListing resourceListing = readResourceListing(responseBody, messages);
+                callbacks.printOutput("resourceListing: " + resourceListing);
 
 				ApiDeclaration apiDeclaration = readDeclaration(responseBody, messages);
+                callbacks.printOutput("apiDeclaration: " + apiDeclaration);
+                if (apiDeclaration == null) apiDeclaration = new ApiDeclaration();
 				List<ApiDeclaration> apis = new ArrayList<>();
 				apis.add(apiDeclaration);
 								
